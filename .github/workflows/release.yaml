@@ -7,6 +7,17 @@ on:
 jobs:
   postgres:
     runs-on: ubuntu-latest
+    env:
+      SKIP_PG_DB_RESET: "1"
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: pbtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,6 +32,7 @@ jobs:
 
   goreleaser:
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     env:
       flags: ""
     steps:
