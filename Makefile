@@ -42,7 +42,7 @@ pg-test-db-reset:
 test-pg-smoke: pg-test-db-reset
 	PB_DB_DIALECT=postgres PB_DATA_DB_CONN='postgres://postgres:pbtest@127.0.0.1:5432/pbtestdb?sslmode=disable' PB_AUX_DB_CONN='postgres://postgres:pbtest@127.0.0.1:5432/pbtestaux?sslmode=disable' go build -o ./tmp/base-pg-test ./examples/base
 	PB_DB_DIALECT=postgres PB_DATA_DB_CONN='postgres://postgres:pbtest@127.0.0.1:5432/pbtestdb?sslmode=disable' PB_AUX_DB_CONN='postgres://postgres:pbtest@127.0.0.1:5432/pbtestaux?sslmode=disable' ./tmp/base-pg-test serve --http=127.0.0.1:8091 --dir=./tmp/pb_pg_smoke > ./tmp/pb_pg_smoke.log 2>&1 &
-	sleep 5
+	for i in $$(seq 1 30); do sleep 2; curl -fsS http://127.0.0.1:8091/api/health >/dev/null 2>&1 && break; done
 	curl -fsS http://127.0.0.1:8091/api/health >/dev/null
 	pkill -f 'tmp/base-pg-test serve --http=127.0.0.1:8091' || true
 
