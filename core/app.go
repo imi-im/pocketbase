@@ -73,6 +73,9 @@ type App interface {
 	// When enabled logs, executed sql statements, etc. are printed to the stderr.
 	IsDev() bool
 
+	// DBDialect returns the configured database dialect.
+	DBDialect() DBDialect
+
 	// Settings returns the loaded app settings.
 	Settings() *Settings
 

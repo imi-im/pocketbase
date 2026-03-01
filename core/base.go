@@ -57,6 +57,9 @@ type DBConnectFunc func(dbPath string) (*dbx.DB, error)
 // BaseAppConfig defines a BaseApp configuration option
 type BaseAppConfig struct {
 	DBConnect        DBConnectFunc
+	DBDialect        DBDialect
+	DataDBConnString string
+	AuxDBConnString  string
 	DataDir          string
 	EncryptionEnv    string
 	QueryTimeout     time.Duration
@@ -206,7 +209,12 @@ func NewBaseApp(config BaseAppConfig) *BaseApp {
 
 	// apply config defaults
 	if app.config.DBConnect == nil {
-		app.config.DBConnect = DefaultDBConnect
+		app.config.DBConnect = func(dbPath string) (*dbx.DB, error) {
+			return DefaultDBConnectForDialect(app.config.DBDialect, dbPath)
+		}
+	}
+	if app.config.DBDialect == "" {
+		app.config.DBDialect = DBDialectSQLite
 	}
 	if app.config.DataMaxOpenConns <= 0 {
 		app.config.DataMaxOpenConns = DefaultDataMaxOpenConns
@@ -592,6 +600,11 @@ func (app *BaseApp) EncryptionEnv() string {
 // When enabled logs, executed sql statements, etc. are printed to the stderr.
 func (app *BaseApp) IsDev() bool {
 	return app.config.IsDev
+}
+
+// DBDialect returns the configured database dialect.
+func (app *BaseApp) DBDialect() DBDialect {
+	return app.config.DBDialect
 }
 
 // Settings returns the loaded app settings.
@@ -1172,7 +1185,10 @@ func (app *BaseApp) OnBatchRequest() *hook.Hook[*BatchRequestEvent] {
 // -------------------------------------------------------------------
 
 func (app *BaseApp) initDataDB() error {
-	dbPath := filepath.Join(app.DataDir(), "data.db")
+	dbPath, err := app.resolveDataDBSource()
+	if err != nil {
+		return err
+	}
 
 	concurrentDB, err := app.config.DBConnect(dbPath)
 	if err != nil {
@@ -1234,7 +1250,10 @@ func normalizeSQLLog(sql string) string {
 func (app *BaseApp) initAuxDB() error {
 	// note: renamed to "auxiliary" because "aux" is a reserved Windows filename
 	// (see https://github.com/pocketbase/pocketbase/issues/5607)
-	dbPath := filepath.Join(app.DataDir(), "auxiliary.db")
+	dbPath, err := app.resolveAuxDBSource()
+	if err != nil {
+		return err
+	}
 
 	concurrentDB, err := app.config.DBConnect(dbPath)
 	if err != nil {
@@ -1256,6 +1275,36 @@ func (app *BaseApp) initAuxDB() error {
 	app.auxNonconcurrentDB = nonconcurrentDB
 
 	return nil
+}
+
+func (app *BaseApp) resolveDataDBSource() (string, error) {
+	if app.config.DBDialect == DBDialectPostgres {
+		if app.config.DataDBConnString == "" {
+			return "", fmt.Errorf("BaseAppConfig.DataDBConnString is required when using %q dialect", DBDialectPostgres)
+		}
+
+		return app.config.DataDBConnString, nil
+	}
+
+	return filepath.Join(app.DataDir(), "data.db"), nil
+}
+
+func (app *BaseApp) resolveAuxDBSource() (string, error) {
+	if app.config.DBDialect == DBDialectPostgres {
+		if app.config.AuxDBConnString != "" {
+			return app.config.AuxDBConnString, nil
+		}
+
+		if app.config.DataDBConnString == "" {
+			return "", fmt.Errorf("BaseAppConfig.DataDBConnString is required when using %q dialect", DBDialectPostgres)
+		}
+
+		return app.config.DataDBConnString, nil
+	}
+
+	// note: renamed to "auxiliary" because "aux" is a reserved Windows filename
+	// (see https://github.com/pocketbase/pocketbase/issues/5607)
+	return filepath.Join(app.DataDir(), "auxiliary.db"), nil
 }
 
 // @todo remove after refactoring the FilesManager interface
@@ -1357,19 +1406,21 @@ func (app *BaseApp) registerBaseHooks() {
 	})
 
 	app.Cron().Add("__pbDBOptimize__", "0 0 * * *", func() {
-		_, execErr := app.NonconcurrentDB().NewQuery("PRAGMA wal_checkpoint(TRUNCATE)").Execute()
-		if execErr != nil {
-			app.Logger().Warn("Failed to run periodic PRAGMA wal_checkpoint for the main DB", slog.String("error", execErr.Error()))
-		}
+		if app.DBDialect() == DBDialectSQLite {
+			_, execErr := app.NonconcurrentDB().NewQuery("PRAGMA wal_checkpoint(TRUNCATE)").Execute()
+			if execErr != nil {
+				app.Logger().Warn("Failed to run periodic PRAGMA wal_checkpoint for the main DB", slog.String("error", execErr.Error()))
+			}
 
-		_, execErr = app.AuxNonconcurrentDB().NewQuery("PRAGMA wal_checkpoint(TRUNCATE)").Execute()
-		if execErr != nil {
-			app.Logger().Warn("Failed to run periodic PRAGMA wal_checkpoint for the auxiliary DB", slog.String("error", execErr.Error()))
-		}
+			_, execErr = app.AuxNonconcurrentDB().NewQuery("PRAGMA wal_checkpoint(TRUNCATE)").Execute()
+			if execErr != nil {
+				app.Logger().Warn("Failed to run periodic PRAGMA wal_checkpoint for the auxiliary DB", slog.String("error", execErr.Error()))
+			}
 
-		_, execErr = app.NonconcurrentDB().NewQuery("PRAGMA optimize").Execute()
-		if execErr != nil {
-			app.Logger().Warn("Failed to run periodic PRAGMA optimize", slog.String("error", execErr.Error()))
+			_, execErr = app.NonconcurrentDB().NewQuery("PRAGMA optimize").Execute()
+			if execErr != nil {
+				app.Logger().Warn("Failed to run periodic PRAGMA optimize", slog.String("error", execErr.Error()))
+			}
 		}
 	})
 

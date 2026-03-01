@@ -152,7 +152,7 @@ func TestTokenFunctionsGeoDistance(t *testing.T) {
 
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
-			result, err := fn(s.resolver, s.args...)
+			result, err := fn("sqlite", s.resolver, s.args...)
 
 			hasErr := err != nil
 			if hasErr != s.expectErr {
@@ -179,6 +179,7 @@ func TestTokenFunctionsGeoDistanceExec(t *testing.T) {
 	}
 
 	result, err := fn(
+		"sqlite",
 		func(t fexpr.Token) (*ResolverResult, error) {
 			placeholder := "t" + security.PseudorandomString(5)
 			return &ResolverResult{Identifier: "{:" + placeholder + "}", Params: map[string]any{placeholder: t.Literal}}, nil
@@ -498,7 +499,7 @@ func TestTokenFunctionsStrftime(t *testing.T) {
 
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
-			result, err := fn(s.resolver, s.args...)
+			result, err := fn("sqlite", s.resolver, s.args...)
 
 			hasErr := err != nil
 			if hasErr != s.expectErr {
@@ -525,6 +526,7 @@ func TestTokenFunctionsStrftimeExec(t *testing.T) {
 	}
 
 	result, err := fn(
+		"sqlite",
 		func(t fexpr.Token) (*ResolverResult, error) {
 			placeholder := "t" + security.PseudorandomString(5)
 			return &ResolverResult{Identifier: "{:" + placeholder + "}", Params: map[string]any{placeholder: t.Literal}}, nil
@@ -551,6 +553,57 @@ func TestTokenFunctionsStrftimeExec(t *testing.T) {
 	expected := "2027-06"
 	if column[0] != expected {
 		t.Fatalf("Expected date value %s, got %s", expected, column[0])
+	}
+}
+
+func TestTokenFunctionsStrftimePostgresBuild(t *testing.T) {
+	t.Parallel()
+
+	fn, ok := TokenFunctions["strftime"]
+	if !ok {
+		t.Error("Expected strftime token function to be registered.")
+	}
+
+	result, err := fn(
+		"postgres",
+		func(token fexpr.Token) (*ResolverResult, error) {
+			switch token.Literal {
+			case "%Y-%m":
+				return &ResolverResult{Identifier: "{:format}", Params: dbx.Params{"format": "%Y-%m"}}, nil
+			case "2026-01-02 01:02:03.456Z":
+				return &ResolverResult{Identifier: "{:time}", Params: dbx.Params{"time": "2026-01-02 01:02:03.456Z"}}, nil
+			case "+1 years":
+				return &ResolverResult{Identifier: "{:m1}", Params: dbx.Params{"m1": "+1 years"}}, nil
+			}
+
+			return &ResolverResult{Identifier: "{:unknown}", Params: dbx.Params{"unknown": token.Literal}}, nil
+		},
+		fexpr.Token{Literal: "%Y-%m", Type: fexpr.TokenText},
+		fexpr.Token{Literal: "2026-01-02 01:02:03.456Z", Type: fexpr.TokenText},
+		fexpr.Token{Literal: "+1 years", Type: fexpr.TokenText},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.NullFallback != NullFallbackEnforced {
+		t.Fatalf("Expected NullFallback %v, got %v", NullFallbackEnforced, result.NullFallback)
+	}
+
+	if !strings.Contains(result.Identifier, "to_char(") {
+		t.Fatalf("Expected postgres identifier to contain to_char, got %s", result.Identifier)
+	}
+
+	if !strings.Contains(result.Identifier, "::timestamp") {
+		t.Fatalf("Expected postgres identifier to cast time value to timestamp, got %s", result.Identifier)
+	}
+
+	if !strings.Contains(result.Identifier, "::interval") {
+		t.Fatalf("Expected postgres identifier to cast interval modifiers, got %s", result.Identifier)
+	}
+
+	if !strings.Contains(result.Identifier, "'YYYY'") || !strings.Contains(result.Identifier, "'MM'") {
+		t.Fatalf("Expected postgres format expression replacements to include YYYY and MM tokens, got %s", result.Identifier)
 	}
 }
 

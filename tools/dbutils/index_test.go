@@ -232,6 +232,32 @@ func TestIndexBuild(t *testing.T) {
 	}
 }
 
+func TestIndexBuildByDialect(t *testing.T) {
+	idx := dbutils.Index{
+		Unique:    true,
+		IndexName: "users_username_idx",
+		TableName: "users",
+		Columns: []dbutils.IndexColumn{
+			{Name: "username", Collate: "NOCASE"},
+			{Name: "created", Sort: "desc"},
+		},
+		Where: "username != ''",
+	}
+
+	if got := idx.BuildByDialect(dbutils.DialectSQLite); got != "CREATE UNIQUE INDEX `users_username_idx` ON `users` (\n  `username` COLLATE NOCASE,\n  `created` DESC\n) WHERE username != ''" {
+		t.Fatalf("unexpected sqlite index build: %s", got)
+	}
+
+	if got := idx.BuildByDialect(dbutils.DialectPostgres); got != "CREATE UNIQUE INDEX \"users_username_idx\" ON \"users\" (\n  \"username\",\n  \"created\" DESC\n) WHERE username != ''" {
+		t.Fatalf("unexpected postgres index build: %s", got)
+	}
+
+	idx.Where = "`username` != ''"
+	if got := idx.BuildByDialect(dbutils.DialectPostgres); got != "CREATE UNIQUE INDEX \"users_username_idx\" ON \"users\" (\n  \"username\",\n  \"created\" DESC\n) WHERE \"username\" != ''" {
+		t.Fatalf("unexpected postgres index build with quoted where: %s", got)
+	}
+}
+
 func TestHasSingleColumnUniqueIndex(t *testing.T) {
 	scenarios := []struct {
 		name     string

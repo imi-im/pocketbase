@@ -39,8 +39,21 @@ func (idx Index) IsValid() bool {
 //
 // Returns empty string if idx.IsValid() is false.
 func (idx Index) Build() string {
+	return idx.BuildByDialect(DialectSQLite)
+}
+
+// BuildByDialect returns a "CREATE INDEX" SQL string from the current index parts,
+// adjusted for the provided SQL dialect.
+//
+// Returns empty string if idx.IsValid() is false.
+func (idx Index) BuildByDialect(dialect string) string {
 	if !idx.IsValid() {
 		return ""
+	}
+
+	identifierQuote := "`"
+	if strings.EqualFold(dialect, DialectPostgres) {
+		identifierQuote = `"`
 	}
 
 	var str strings.Builder
@@ -58,18 +71,22 @@ func (idx Index) Build() string {
 	}
 
 	if idx.SchemaName != "" {
-		str.WriteString("`")
+		str.WriteString(identifierQuote)
 		str.WriteString(idx.SchemaName)
-		str.WriteString("`.")
+		str.WriteString(identifierQuote)
+		str.WriteString(".")
 	}
 
-	str.WriteString("`")
+	str.WriteString(identifierQuote)
 	str.WriteString(idx.IndexName)
-	str.WriteString("` ")
+	str.WriteString(identifierQuote)
+	str.WriteString(" ")
 
-	str.WriteString("ON `")
+	str.WriteString("ON ")
+	str.WriteString(identifierQuote)
 	str.WriteString(idx.TableName)
-	str.WriteString("` (")
+	str.WriteString(identifierQuote)
+	str.WriteString(" (")
 
 	if len(idx.Columns) > 1 {
 		str.WriteString("\n  ")
@@ -91,12 +108,12 @@ func (idx Index) Build() string {
 			str.WriteString(trimmedColName)
 		} else {
 			// regular identifier
-			str.WriteString("`")
+			str.WriteString(identifierQuote)
 			str.WriteString(trimmedColName)
-			str.WriteString("`")
+			str.WriteString(identifierQuote)
 		}
 
-		if col.Collate != "" {
+		if col.Collate != "" && !(strings.EqualFold(dialect, DialectPostgres) && strings.EqualFold(col.Collate, "nocase")) {
 			str.WriteString(" COLLATE ")
 			str.WriteString(col.Collate)
 		}
@@ -117,7 +134,11 @@ func (idx Index) Build() string {
 
 	if idx.Where != "" {
 		str.WriteString(" WHERE ")
-		str.WriteString(idx.Where)
+		where := idx.Where
+		if strings.EqualFold(dialect, DialectPostgres) {
+			where = strings.ReplaceAll(where, "`", `"`)
+		}
+		str.WriteString(where)
 	}
 
 	return str.String()

@@ -6,6 +6,18 @@ import (
 	"testing"
 )
 
+type fakeSQLStateErr struct {
+	state string
+}
+
+func (e fakeSQLStateErr) Error() string {
+	return "sqlstate=" + e.state
+}
+
+func (e fakeSQLStateErr) SQLState() string {
+	return e.state
+}
+
 func TestGetDefaultRetryInterval(t *testing.T) {
 	t.Parallel()
 
@@ -34,6 +46,14 @@ func TestBaseLockRetry(t *testing.T) {
 		{errors.New("test"), 3, 1},
 		{errors.New("database is locked"), 3, 3},
 		{errors.New("table is locked"), 3, 3},
+		{errors.New("deadlock detected"), 3, 3},
+		{errors.New("could not serialize access due to concurrent update"), 3, 3},
+		{fakeSQLStateErr{state: "40P01"}, 3, 3},
+		{fakeSQLStateErr{state: "40001"}, 3, 3},
+		{fakeSQLStateErr{state: "55P03"}, 3, 3},
+		{fakeSQLStateErr{state: "40p01"}, 3, 3},
+		{fmt.Errorf("wrapped: %w", fakeSQLStateErr{state: "40001"}), 3, 3},
+		{errors.New("could not obtain lock on row in relation \"demo\""), 3, 3},
 	}
 
 	for i, s := range scenarios {

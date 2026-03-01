@@ -310,8 +310,16 @@ func resolveToken(token fexpr.Token, fieldResolver FieldResolver) (*ResolverResu
 			return nil, fmt.Errorf("unknown function %q", token.Literal)
 		}
 
+		dialect := "sqlite"
+		if resolverWithDialect, ok := fieldResolver.(DialectFieldResolver); ok {
+			customDialect := strings.ToLower(strings.TrimSpace(resolverWithDialect.SearchDialect()))
+			if customDialect != "" {
+				dialect = customDialect
+			}
+		}
+
 		args, _ := token.Meta.([]fexpr.Token)
-		return fn(func(argToken fexpr.Token) (*ResolverResult, error) {
+		return fn(dialect, func(argToken fexpr.Token) (*ResolverResult, error) {
 			return resolveToken(argToken, fieldResolver)
 		}, args...)
 	}

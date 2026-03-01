@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,10 @@ func TestNewBaseApp(t *testing.T) {
 		t.Fatalf("expected IsDev true, got %v", app.IsDev())
 	}
 
+	if app.DBDialect() != core.DBDialectSQLite {
+		t.Fatalf("expected DBDialect %q, got %q", core.DBDialectSQLite, app.DBDialect())
+	}
+
 	if app.Store() == nil {
 		t.Fatal("expected Store to be set, got nil")
 	}
@@ -55,6 +60,37 @@ func TestNewBaseApp(t *testing.T) {
 	if app.Cron() == nil {
 		t.Fatal("expected Cron to be set, got nil")
 	}
+}
+
+func TestBaseAppBootstrapPostgresWithDefaultDBConnect(t *testing.T) {
+	const testDataDir = "./pb_base_app_test_data_dir/"
+	defer os.RemoveAll(testDataDir)
+
+	app := core.NewBaseApp(core.BaseAppConfig{
+		DataDir:   testDataDir,
+		DBDialect: core.DBDialectPostgres,
+		DBConnect: nil,
+	})
+	defer app.ResetBootstrapState()
+
+	err := app.Bootstrap()
+	if err == nil {
+		t.Fatal("expected bootstrap error for default postgres DBConnect, got nil")
+	}
+
+	if got := err.Error(); got == "" || !containsAll(got, "postgres", "DataDBConnString") {
+		t.Fatalf("expected error to mention postgres and DataDBConnString, got %q", got)
+	}
+}
+
+func containsAll(str string, parts ...string) bool {
+	for _, p := range parts {
+		if !strings.Contains(strings.ToLower(str), strings.ToLower(p)) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func TestBaseAppBootstrap(t *testing.T) {

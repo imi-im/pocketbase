@@ -15,6 +15,27 @@ import (
 	"github.com/pocketbase/pocketbase/tools/list"
 )
 
+func newPostgresBackupTestApp(t *testing.T) *tests.TestApp {
+	t.Helper()
+
+	dataConn := os.Getenv("PB_TEST_PG_DATA_DB_CONN")
+	auxConn := os.Getenv("PB_TEST_PG_AUX_DB_CONN")
+	if dataConn == "" || auxConn == "" {
+		t.Skip("PB_TEST_PG_DATA_DB_CONN and PB_TEST_PG_AUX_DB_CONN are required")
+	}
+
+	app, err := tests.NewTestAppWithDialect(tests.TestAppDBConfig{
+		Dialect:          core.DBDialectPostgres,
+		DataDBConnString: dataConn,
+		AuxDBConnString:  auxConn,
+	})
+	if err != nil {
+		t.Fatalf("failed to init postgres test app: %v", err)
+	}
+
+	return app
+}
+
 func TestCreateBackup(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
@@ -107,6 +128,43 @@ func TestRestoreBackup(t *testing.T) {
 	// missing backup
 	if err := app.RestoreBackup(context.Background(), "missing"); err == nil {
 		t.Fatal("Expected missing error, got nil")
+	}
+}
+
+func TestCreateBackupPostgres(t *testing.T) {
+	app := newPostgresBackupTestApp(t)
+	defer app.Cleanup()
+
+	if err := app.CreateBackup(context.Background(), "pg_test.zip"); err != nil {
+		t.Fatalf("Failed to create postgres backup: %v", err)
+	}
+
+	backupsDir := filepath.Join(app.DataDir(), core.LocalBackupsDirName)
+	if _, err := os.Stat(filepath.Join(backupsDir, "pg_test.zip")); err != nil {
+		t.Fatalf("Missing postgres backup file: %v", err)
+	}
+
+	if calls := app.EventCalls["OnBackupCreate"]; calls != 1 {
+		t.Fatalf("Expected OnBackupCreate to be called 1 time, got %d", calls)
+	}
+}
+
+func TestRestoreBackupPostgresErrors(t *testing.T) {
+	app := newPostgresBackupTestApp(t)
+	defer app.Cleanup()
+
+	if err := app.CreateBackup(context.Background(), "pg_restore_test.zip"); err != nil {
+		t.Fatalf("Failed to create postgres backup for restore test: %v", err)
+	}
+
+	app.Store().Set(core.StoreKeyActiveBackup, "")
+	if err := app.RestoreBackup(context.Background(), "pg_restore_test.zip"); err == nil {
+		t.Fatal("Expected pending restore error, got nil")
+	}
+	app.Store().Remove(core.StoreKeyActiveBackup)
+
+	if err := app.RestoreBackup(context.Background(), "missing_pg_backup.zip"); err == nil {
+		t.Fatal("Expected missing postgres backup restore error, got nil")
 	}
 }
 

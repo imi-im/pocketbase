@@ -3,6 +3,8 @@ package core_test
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -10,6 +12,12 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tests"
 )
+
+type pgSchemaSnapshot struct {
+	Tables  []string
+	Columns []string
+	Indexes []string
+}
 
 func TestMigrationsRunnerUpAndDown(t *testing.T) {
 	t.Parallel()
@@ -197,6 +205,162 @@ func TestMigrationsRunnerRemoveMissingAppliedMigrations(t *testing.T) {
 	if isMigrationApplied(app, "2_test") {
 		t.Fatalf("Expected 2_test migration to NOT be applied")
 	}
+}
+
+func TestMigrationsRunnerPostgresSchemaConsistencyFullVsIncremental(t *testing.T) {
+	dataConn := os.Getenv("PB_TEST_PG_DATA_DB_CONN")
+	auxConn := os.Getenv("PB_TEST_PG_AUX_DB_CONN")
+
+	if dataConn == "" || auxConn == "" {
+		t.Skip("PB_TEST_PG_DATA_DB_CONN and PB_TEST_PG_AUX_DB_CONN are required")
+	}
+
+	app, cleanup, err := newRawPostgresMigrationTestApp(dataConn, auxConn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	if err := resetPostgresSchemas(app); err != nil {
+		t.Fatalf("failed to reset postgres schemas before full migration run: %v", err)
+	}
+
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatalf("full migration run failed: %v", err)
+	}
+
+	fullDataSnapshot, err := capturePostgresSchemaSnapshot(app.DB())
+	if err != nil {
+		t.Fatalf("failed to capture full data snapshot: %v", err)
+	}
+
+	fullAuxSnapshot, err := capturePostgresSchemaSnapshot(app.AuxDB())
+	if err != nil {
+		t.Fatalf("failed to capture full aux snapshot: %v", err)
+	}
+
+	if err := resetPostgresSchemas(app); err != nil {
+		t.Fatalf("failed to reset postgres schemas before incremental migration run: %v", err)
+	}
+
+	combined := core.MigrationsList{}
+	combined.Copy(core.SystemMigrations)
+	combined.Copy(core.AppMigrations)
+
+	items := combined.Items()
+	if len(items) < 2 {
+		t.Fatalf("expected at least 2 migrations, got %d", len(items))
+	}
+
+	split := len(items) / 2
+	firstHalf := core.MigrationsList{}
+	for _, item := range items[:split] {
+		firstHalf.Add(item)
+	}
+
+	if _, err := core.NewMigrationsRunner(app, firstHalf).Up(); err != nil {
+		t.Fatalf("incremental first-half migration run failed: %v", err)
+	}
+
+	if _, err := core.NewMigrationsRunner(app, combined).Up(); err != nil {
+		t.Fatalf("incremental full migration completion failed: %v", err)
+	}
+
+	incrementalDataSnapshot, err := capturePostgresSchemaSnapshot(app.DB())
+	if err != nil {
+		t.Fatalf("failed to capture incremental data snapshot: %v", err)
+	}
+
+	incrementalAuxSnapshot, err := capturePostgresSchemaSnapshot(app.AuxDB())
+	if err != nil {
+		t.Fatalf("failed to capture incremental aux snapshot: %v", err)
+	}
+
+	if !reflect.DeepEqual(fullDataSnapshot, incrementalDataSnapshot) {
+		t.Fatalf("data schema mismatch between full and incremental runs\nfull=%+v\nincremental=%+v", fullDataSnapshot, incrementalDataSnapshot)
+	}
+
+	if !reflect.DeepEqual(fullAuxSnapshot, incrementalAuxSnapshot) {
+		t.Fatalf("aux schema mismatch between full and incremental runs\nfull=%+v\nincremental=%+v", fullAuxSnapshot, incrementalAuxSnapshot)
+	}
+}
+
+func newRawPostgresMigrationTestApp(dataConn, auxConn string) (*core.BaseApp, func(), error) {
+	tempDir, err := os.MkdirTemp("", "pb_pg_migrations_test_*")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	app := core.NewBaseApp(core.BaseAppConfig{
+		DataDir:          tempDir,
+		EncryptionEnv:    "pb_test_env",
+		DBDialect:        core.DBDialectPostgres,
+		DataDBConnString: dataConn,
+		AuxDBConnString:  auxConn,
+	})
+
+	if err := app.Bootstrap(); err != nil {
+		_ = os.RemoveAll(tempDir)
+		return nil, nil, err
+	}
+
+	cleanup := func() {
+		_ = app.ResetBootstrapState()
+		_ = os.RemoveAll(tempDir)
+	}
+
+	return app, cleanup, nil
+}
+
+func resetPostgresSchemas(app core.App) error {
+	dbs := []dbx.Builder{app.DB(), app.AuxDB()}
+	for _, db := range dbs {
+		if _, err := db.NewQuery("DROP SCHEMA IF EXISTS public CASCADE").Execute(); err != nil {
+			return err
+		}
+
+		if _, err := db.NewQuery("CREATE SCHEMA public").Execute(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func capturePostgresSchemaSnapshot(db dbx.Builder) (pgSchemaSnapshot, error) {
+	snapshot := pgSchemaSnapshot{}
+
+	err := db.NewQuery(`
+		SELECT tablename
+		FROM pg_catalog.pg_tables
+		WHERE schemaname = 'public'
+		ORDER BY tablename
+	`).Column(&snapshot.Tables)
+	if err != nil {
+		return snapshot, err
+	}
+
+	err = db.NewQuery(`
+		SELECT table_name || '.' || column_name || ':' || udt_name || ':' || is_nullable || ':' || COALESCE(column_default, '')
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		ORDER BY table_name, ordinal_position
+	`).Column(&snapshot.Columns)
+	if err != nil {
+		return snapshot, err
+	}
+
+	err = db.NewQuery(`
+		SELECT schemaname || '.' || tablename || '.' || indexname || ':' || indexdef
+		FROM pg_indexes
+		WHERE schemaname = 'public'
+		ORDER BY tablename, indexname
+	`).Column(&snapshot.Indexes)
+	if err != nil {
+		return snapshot, err
+	}
+
+	return snapshot, nil
 }
 
 func isMigrationApplied(app core.App, file string) bool {

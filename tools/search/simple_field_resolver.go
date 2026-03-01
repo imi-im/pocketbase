@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/tools/dbutils"
 	"github.com/pocketbase/pocketbase/tools/inflector"
 	"github.com/pocketbase/pocketbase/tools/list"
 )
@@ -57,6 +58,14 @@ type FieldResolver interface {
 	Resolve(field string) (*ResolverResult, error)
 }
 
+// DialectFieldResolver defines an optional FieldResolver interface for
+// exposing the preferred SQL dialect used when resolving token functions.
+//
+// When not implemented, the search package falls back to SQLite-compatible SQL.
+type DialectFieldResolver interface {
+	SearchDialect() string
+}
+
 // NewSimpleFieldResolver creates a new `SimpleFieldResolver` with the
 // provided `allowedFields`.
 //
@@ -65,6 +74,7 @@ type FieldResolver interface {
 func NewSimpleFieldResolver(allowedFields ...string) *SimpleFieldResolver {
 	return &SimpleFieldResolver{
 		allowedFields: allowedFields,
+		searchDialect: dbutils.DialectSQLite,
 	}
 }
 
@@ -74,12 +84,27 @@ func NewSimpleFieldResolver(allowedFields ...string) *SimpleFieldResolver {
 // If `allowedFields` are empty no fields filtering is applied.
 type SimpleFieldResolver struct {
 	allowedFields []string
+	searchDialect string
 }
 
 // UpdateQuery implements `search.UpdateQuery` interface.
 func (r *SimpleFieldResolver) UpdateQuery(query *dbx.SelectQuery) error {
 	// nothing to update...
 	return nil
+}
+
+// SearchDialect implements `search.DialectFieldResolver`.
+func (r *SimpleFieldResolver) SearchDialect() string {
+	if strings.TrimSpace(r.searchDialect) == "" {
+		return dbutils.DialectSQLite
+	}
+
+	return r.searchDialect
+}
+
+// SetSearchDialect sets the preferred SQL dialect used for the resolved expressions.
+func (r *SimpleFieldResolver) SetSearchDialect(dialect string) {
+	r.searchDialect = strings.TrimSpace(dialect)
 }
 
 // Resolve implements `search.Resolve` interface.
@@ -115,10 +140,15 @@ func (r *SimpleFieldResolver) Resolve(field string) (*ResolverResult, error) {
 
 	return &ResolverResult{
 		NullFallback: NullFallbackDisabled,
-		Identifier: fmt.Sprintf(
-			"JSON_EXTRACT([[%s]], '%s')",
-			inflector.Columnify(parts[0]),
-			jsonPath.String(),
-		),
+		Identifier: func() string {
+			column := inflector.Columnify(parts[0])
+			path := strings.TrimPrefix(strings.TrimPrefix(jsonPath.String(), "$"), ".")
+
+			if strings.EqualFold(r.SearchDialect(), dbutils.DialectPostgres) {
+				return dbutils.JSONExtractByDialect(dbutils.DialectPostgres, column, path)
+			}
+
+			return fmt.Sprintf("JSON_EXTRACT([[%s]], '%s')", column, jsonPath.String())
+		}(),
 	}, nil
 }

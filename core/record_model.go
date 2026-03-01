@@ -1532,7 +1532,7 @@ func cascadeRecordDelete(app App, mainRecord *Record, refs map[*Collection][]Fie
 			} else {
 				query.AndWhere(dbx.Exists(dbx.NewExp(fmt.Sprintf(
 					`SELECT 1 FROM %s {{__je__}} WHERE [[__je__.value]]={:jevalue}`,
-					dbutils.JSONEach(prefixedFieldName),
+					dbutils.JSONEachByDialect(app.DBDialect().String(), prefixedFieldName),
 				), dbx.Params{
 					"jevalue": mainRecord.Id,
 				})))

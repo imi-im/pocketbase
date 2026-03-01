@@ -5,6 +5,20 @@ on:
   push:
 
 jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '>=1.26.0'
+
+      - name: PostgreSQL smoke + migration consistency
+        run: make test-pg
+
   goreleaser:
     runs-on: ubuntu-latest
     env:

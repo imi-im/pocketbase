@@ -19,6 +19,8 @@
 
 **For documentation and examples, please visit https://pocketbase.io/docs.**
 
+For local PostgreSQL setup, smoke tests and common pitfalls, check [POSTGRESQL_USAGE.md](POSTGRESQL_USAGE.md).
+
 > [!WARNING]
 > Please keep in mind that PocketBase is still under active development
 > and therefore full backward compatibility is not guaranteed before reaching v1.0.0.

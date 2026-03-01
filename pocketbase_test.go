@@ -5,8 +5,86 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/spf13/cobra"
 )
+
+func TestNormalizeDBConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      Config
+		wantDialect core.DBDialect
+		wantData    string
+		wantAux     string
+	}{
+		{
+			name: "preserve explicit sqlite config",
+			config: Config{
+				DBDialect:        core.DBDialectSQLite,
+				DataDBConnString: "./pb_data/data.db",
+				AuxDBConnString:  "./pb_data/auxiliary.db",
+			},
+			wantDialect: core.DBDialectSQLite,
+			wantData:    "./pb_data/data.db",
+			wantAux:     "./pb_data/auxiliary.db",
+		},
+		{
+			name: "aux defaults to data",
+			config: Config{
+				DBDialect:        core.DBDialectSQLite,
+				DataDBConnString: "./pb_data/data.db",
+				AuxDBConnString:  "",
+			},
+			wantDialect: core.DBDialectSQLite,
+			wantData:    "./pb_data/data.db",
+			wantAux:     "./pb_data/data.db",
+		},
+		{
+			name: "postgres uri forces postgres dialect",
+			config: Config{
+				DBDialect:        core.DBDialectSQLite,
+				DataDBConnString: "postgres://user:pass@127.0.0.1:5432/app?sslmode=disable",
+				AuxDBConnString:  "",
+			},
+			wantDialect: core.DBDialectPostgres,
+			wantData:    "postgres://user:pass@127.0.0.1:5432/app?sslmode=disable",
+			wantAux:     "postgres://user:pass@127.0.0.1:5432/app?sslmode=disable",
+		},
+		{
+			name: "postgresql uri forces postgres dialect",
+			config: Config{
+				DBDialect:        "",
+				DataDBConnString: "postgresql://user:pass@127.0.0.1:5432/app?sslmode=disable",
+				AuxDBConnString:  "postgresql://user:pass@127.0.0.1:5432/aux?sslmode=disable",
+			},
+			wantDialect: core.DBDialectPostgres,
+			wantData:    "postgresql://user:pass@127.0.0.1:5432/app?sslmode=disable",
+			wantAux:     "postgresql://user:pass@127.0.0.1:5432/aux?sslmode=disable",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := tt.config
+			normalizeDBConfig(&cfg)
+
+			if cfg.DBDialect != tt.wantDialect {
+				t.Fatalf("dialect mismatch: got %q, want %q", cfg.DBDialect, tt.wantDialect)
+			}
+			if cfg.DataDBConnString != tt.wantData {
+				t.Fatalf("data conn mismatch: got %q, want %q", cfg.DataDBConnString, tt.wantData)
+			}
+			if cfg.AuxDBConnString != tt.wantAux {
+				t.Fatalf("aux conn mismatch: got %q, want %q", cfg.AuxDBConnString, tt.wantAux)
+			}
+		})
+	}
+}
 
 func TestNew(t *testing.T) {
 	// copy os.Args

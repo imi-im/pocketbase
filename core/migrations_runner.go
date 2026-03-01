@@ -253,7 +253,21 @@ func (r *MigrationsRunner) initMigrationsTable() error {
 		r.tableName,
 	)
 
+	if r.app.DBDialect() == DBDialectPostgres {
+		rawQuery = fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS {{%s}} (file VARCHAR(255) PRIMARY KEY NOT NULL, applied BIGINT NOT NULL)",
+			r.tableName,
+		)
+	}
+
 	_, err := r.app.DB().NewQuery(rawQuery).Execute()
+
+	if err == nil && r.app.DBDialect() == DBDialectPostgres {
+		_, err = r.app.DB().NewQuery(fmt.Sprintf(
+			"ALTER TABLE {{%s}} ALTER COLUMN [[applied]] TYPE BIGINT",
+			r.tableName,
+		)).Execute()
+	}
 
 	if err == nil {
 		r.inited = true

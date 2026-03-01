@@ -2,6 +2,7 @@
 package tests
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -80,6 +81,40 @@ func NewTestApp(optTestDataDir ...string) (*TestApp, error) {
 	return NewTestAppWithConfig(core.BaseAppConfig{
 		DataDir:       testDataDir,
 		EncryptionEnv: "pb_test_env",
+	})
+}
+
+// TestAppDBConfig defines DB-related options for dialect-specific test app bootstrap.
+type TestAppDBConfig struct {
+	Dialect          core.DBDialect
+	DataDBConnString string
+	AuxDBConnString  string
+}
+
+// NewTestAppWithDialect creates and initializes a test app configured for the provided DB dialect.
+//
+// For SQLite this behaves similarly to [NewTestApp].
+// For PostgreSQL DataDBConnString is required and should point to an isolated test database.
+func NewTestAppWithDialect(dbConfig TestAppDBConfig, optTestDataDir ...string) (*TestApp, error) {
+	var testDataDir string
+	if len(optTestDataDir) > 0 {
+		testDataDir = optTestDataDir[0]
+	}
+
+	if dbConfig.Dialect == "" {
+		dbConfig.Dialect = core.DBDialectSQLite
+	}
+
+	if dbConfig.Dialect == core.DBDialectPostgres && dbConfig.DataDBConnString == "" {
+		return nil, fmt.Errorf("DataDBConnString is required for %q test app", core.DBDialectPostgres)
+	}
+
+	return NewTestAppWithConfig(core.BaseAppConfig{
+		DataDir:          testDataDir,
+		EncryptionEnv:    "pb_test_env",
+		DBDialect:        dbConfig.Dialect,
+		DataDBConnString: dbConfig.DataDBConnString,
+		AuxDBConnString:  dbConfig.AuxDBConnString,
 	})
 }
 

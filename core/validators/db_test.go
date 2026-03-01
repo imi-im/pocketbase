@@ -10,6 +10,19 @@ import (
 	"github.com/pocketbase/pocketbase/tests"
 )
 
+type fakeSQLStateErr struct {
+	msg   string
+	state string
+}
+
+func (e fakeSQLStateErr) Error() string {
+	return e.msg
+}
+
+func (e fakeSQLStateErr) SQLState() string {
+	return e.state
+}
+
 func TestUniqueId(t *testing.T) {
 	t.Parallel()
 
@@ -105,6 +118,40 @@ func TestNormalizeUniqueIndexError(t *testing.T) {
 			"test",
 			[]string{"a", "a_2", "c"},
 			[]string{"a_2", "c"},
+		},
+		{
+			"postgres duplicate key with matching single field",
+			errors.New(`duplicate key value violates unique constraint "users_email_key" (SQLSTATE 23505) DETAIL: Key (email)=(a@example.com) already exists.`),
+			"users",
+			[]string{"email", "name"},
+			[]string{"email"},
+		},
+		{
+			"postgres duplicate key with matching multi fields",
+			errors.New(`duplicate key value violates unique constraint "idx" DETAIL: Key (collectionRef, recordRef)=(users, abc) already exists.`),
+			"ignored",
+			[]string{"collectionRef", "recordRef", "name"},
+			[]string{"collectionRef", "recordRef"},
+		},
+		{
+			"postgres SQLSTATE 23505 with detail",
+			fakeSQLStateErr{
+				msg:   `db error: Key (tokenKey)=(abc) already exists.`,
+				state: "23505",
+			},
+			"ignored",
+			[]string{"tokenKey", "email"},
+			[]string{"tokenKey"},
+		},
+		{
+			"wrapped postgres SQLSTATE 23505 with detail",
+			fmt.Errorf("wrapped: %w", fakeSQLStateErr{
+				msg:   `db error: Key (tokenKey)=(abc) already exists.`,
+				state: "23505",
+			}),
+			"ignored",
+			[]string{"tokenKey", "email"},
+			[]string{"tokenKey"},
 		},
 	}
 

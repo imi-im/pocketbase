@@ -558,14 +558,30 @@ func (cv *collectionValidator) checkIndexes(value any) error {
 
 		// ensure that the index name is not used in another collection
 		var usedTblName string
-		_ = cv.app.ConcurrentDB().Select("tbl_name").
-			From("sqlite_master").
-			AndWhere(dbx.HashExp{"type": "index"}).
-			AndWhere(dbx.NewExp("LOWER([[tbl_name]])!=LOWER({:oldName})", dbx.Params{"oldName": cv.original.Name})).
-			AndWhere(dbx.NewExp("LOWER([[tbl_name]])!=LOWER({:newName})", dbx.Params{"newName": cv.new.Name})).
-			AndWhere(dbx.NewExp("LOWER([[name]])=LOWER({:indexName})", dbx.Params{"indexName": parsed.IndexName})).
-			Limit(1).
-			Row(&usedTblName)
+		if cv.app.DBDialect() == DBDialectPostgres {
+			_ = cv.app.ConcurrentDB().NewQuery(`
+				SELECT tablename
+				FROM pg_indexes
+				WHERE schemaname = current_schema()
+				  AND LOWER(tablename) != LOWER({:oldName})
+				  AND LOWER(tablename) != LOWER({:newName})
+				  AND LOWER(indexname) = LOWER({:indexName})
+				LIMIT 1
+			`).Bind(dbx.Params{
+				"oldName":   cv.original.Name,
+				"newName":   cv.new.Name,
+				"indexName": parsed.IndexName,
+			}).Row(&usedTblName)
+		} else {
+			_ = cv.app.ConcurrentDB().Select("tbl_name").
+				From("sqlite_master").
+				AndWhere(dbx.HashExp{"type": "index"}).
+				AndWhere(dbx.NewExp("LOWER([[tbl_name]])!=LOWER({:oldName})", dbx.Params{"oldName": cv.original.Name})).
+				AndWhere(dbx.NewExp("LOWER([[tbl_name]])!=LOWER({:newName})", dbx.Params{"newName": cv.new.Name})).
+				AndWhere(dbx.NewExp("LOWER([[name]])=LOWER({:indexName})", dbx.Params{"indexName": parsed.IndexName})).
+				Limit(1).
+				Row(&usedTblName)
+		}
 		if usedTblName != "" {
 			return validation.Errors{
 				strconv.Itoa(i): validation.NewError(
@@ -578,7 +594,7 @@ func (cv *collectionValidator) checkIndexes(value any) error {
 		// reset non-important identifiers
 		parsed.SchemaName = "validator"
 		parsed.IndexName = "validator"
-		parsedDef := parsed.Build()
+		parsedDef := parsed.BuildByDialect(cv.app.DBDialect().String())
 
 		if _, isDuplicated := duplicatedDefinitions[parsedDef]; isDuplicated {
 			return validation.Errors{
@@ -618,7 +634,7 @@ func (cv *collectionValidator) checkIndexes(value any) error {
 				oldParsed.Columns[i].Sort = ""
 			}
 
-			oldParsedStr := oldParsed.Build()
+			oldParsedStr := oldParsed.BuildByDialect(cv.app.DBDialect().String())
 
 			for _, column := range oldParsed.Columns {
 				for _, f := range cv.original.Fields {
@@ -644,7 +660,7 @@ func (cv *collectionValidator) checkIndexes(value any) error {
 							newParsed.Columns[i].Sort = ""
 						}
 
-						if oldParsedStr == newParsed.Build() {
+						if oldParsedStr == newParsed.BuildByDialect(cv.app.DBDialect().String()) {
 							hasMatch = true
 							break
 						}

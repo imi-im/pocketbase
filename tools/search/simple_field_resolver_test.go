@@ -85,3 +85,18 @@ func TestSimpleFieldResolverResolve(t *testing.T) {
 		})
 	}
 }
+
+func TestSimpleFieldResolverResolvePostgresDialect(t *testing.T) {
+	r := search.NewSimpleFieldResolver("data.test")
+	r.SetSearchDialect("postgres")
+
+	result, err := r.Resolve("data.test")
+	if err != nil {
+		t.Fatalf("Resolve failed with error %v", err)
+	}
+
+	expected := "(CASE WHEN [[data]] IS NULL THEN NULL ELSE [[data]]::jsonb #>> '{test}' END)"
+	if result.Identifier != expected {
+		t.Fatalf("Expected r.Identifier %q, got %q", expected, result.Identifier)
+	}
+}

@@ -38,6 +38,15 @@ func (app *BaseApp) FindAllCollections(collectionTypes ...string) ([]*Collection
 		q.AndWhere(dbx.In("type", list.ToInterfaceSlice(types)...))
 	}
 
+	if app.DBDialect() == DBDialectPostgres {
+		err := q.OrderBy("created", "id").All(&collections)
+		if err != nil {
+			return nil, err
+		}
+
+		return collections, nil
+	}
+
 	err := q.OrderBy("rowid ASC").All(&collections)
 	if err != nil {
 		return nil, err

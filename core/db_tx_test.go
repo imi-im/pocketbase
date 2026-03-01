@@ -2,11 +2,35 @@ package core_test
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tests"
 )
+
+func newPostgresTxTestApp(t *testing.T) *tests.TestApp {
+	t.Helper()
+
+	dataConn := os.Getenv("PB_TEST_PG_DATA_DB_CONN")
+	auxConn := os.Getenv("PB_TEST_PG_AUX_DB_CONN")
+	if dataConn == "" || auxConn == "" {
+		t.Skip("PB_TEST_PG_DATA_DB_CONN and PB_TEST_PG_AUX_DB_CONN are required")
+	}
+
+	app, err := tests.NewTestAppWithDialect(tests.TestAppDBConfig{
+		Dialect:          core.DBDialectPostgres,
+		DataDBConnString: dataConn,
+		AuxDBConnString:  auxConn,
+	})
+	if err != nil {
+		t.Fatalf("failed to init postgres test app: %v", err)
+	}
+
+	return app
+}
 
 func TestRunInTransaction(t *testing.T) {
 	app, _ := tests.NewTestApp()
@@ -246,6 +270,150 @@ func TestTransactionHooksCallsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestTransactionHooksCallsPostgresParity(t *testing.T) {
+	app := newPostgresTxTestApp(t)
+	defer app.Cleanup()
+
+	assertScenario := func(t *testing.T, rollback bool) {
+		t.Helper()
+
+		existingModel, _ := app.FindAuthRecordByEmail(core.CollectionNameSuperusers, "test@example.com")
+		if existingModel == nil {
+			superusersCollection, err := app.FindCollectionByNameOrId(core.CollectionNameSuperusers)
+			if err != nil {
+				t.Fatalf("failed to load superusers collection: %v", err)
+			}
+
+			existingModel = core.NewRecord(superusersCollection)
+			existingModel.SetEmail("tx_seed_" + fmt.Sprintf("%d", time.Now().UnixNano()) + "@example.com")
+			existingModel.SetPassword("1234567890")
+			if err := app.Save(existingModel); err != nil {
+				t.Fatalf("failed to create fallback superuser: %v", err)
+			}
+		}
+
+		createHookCalls := 0
+		updateHookCalls := 0
+		deleteHookCalls := 0
+		afterCreateHookCalls := 0
+		afterUpdateHookCalls := 0
+		afterDeleteHookCalls := 0
+
+		app.OnModelCreate().BindFunc(func(e *core.ModelEvent) error {
+			createHookCalls++
+			return e.Next()
+		})
+
+		app.OnModelUpdate().BindFunc(func(e *core.ModelEvent) error {
+			updateHookCalls++
+			return e.Next()
+		})
+
+		app.OnModelDelete().BindFunc(func(e *core.ModelEvent) error {
+			deleteHookCalls++
+			return e.Next()
+		})
+
+		app.OnModelAfterCreateSuccess().BindFunc(func(e *core.ModelEvent) error {
+			if e.App.IsTransactional() {
+				t.Fatal("Expected e.App to be non-transactional")
+			}
+
+			afterCreateHookCalls++
+			return e.Next()
+		})
+
+		app.OnModelAfterUpdateSuccess().BindFunc(func(e *core.ModelEvent) error {
+			if e.App.IsTransactional() {
+				t.Fatal("Expected e.App to be non-transactional")
+			}
+
+			afterUpdateHookCalls++
+			return e.Next()
+		})
+
+		app.OnModelAfterDeleteSuccess().BindFunc(func(e *core.ModelEvent) error {
+			if e.App.IsTransactional() {
+				t.Fatal("Expected e.App to be non-transactional")
+			}
+
+			afterDeleteHookCalls++
+			return e.Next()
+		})
+
+		uniqueEmail := "test_pg_tx_" + fmt.Sprintf("%d", time.Now().UnixNano()) + "@example.com"
+
+		err := app.RunInTransaction(func(txApp1 core.App) error {
+			return txApp1.RunInTransaction(func(txApp2 core.App) error {
+				newModel := core.NewRecord(existingModel.Collection())
+				newModel.SetEmail(uniqueEmail)
+				newModel.SetPassword("1234567890")
+				if err := txApp2.Save(newModel); err != nil {
+					t.Fatal(err)
+				}
+
+				if err := txApp2.Save(existingModel); err != nil {
+					t.Fatal(err)
+				}
+				if err := txApp2.Save(existingModel); err != nil {
+					t.Fatal(err)
+				}
+
+				if err := txApp2.Delete(newModel); err != nil {
+					t.Fatal(err)
+				}
+
+				if rollback {
+					return errors.New("test_tx_error")
+				}
+
+				return nil
+			})
+		})
+
+		if rollback && err == nil {
+			t.Fatal("Expected transaction error on rollback scenario")
+		}
+
+		if !rollback && err != nil {
+			t.Fatalf("Unexpected transaction error: %v", err)
+		}
+
+		if createHookCalls != 1 {
+			t.Errorf("Expected createHookCalls to be called 1 time, got %d", createHookCalls)
+		}
+		if updateHookCalls != 2 {
+			t.Errorf("Expected updateHookCalls to be called 2 times, got %d", updateHookCalls)
+		}
+		if deleteHookCalls != 1 {
+			t.Errorf("Expected deleteHookCalls to be called 1 time, got %d", deleteHookCalls)
+		}
+
+		expectedAfterCalls := 1
+		if rollback {
+			expectedAfterCalls = 0
+		}
+
+		if afterCreateHookCalls != expectedAfterCalls {
+			t.Errorf("Expected afterCreateHookCalls to be called %d times, got %d", expectedAfterCalls, afterCreateHookCalls)
+		}
+		if afterUpdateHookCalls != 2*expectedAfterCalls {
+			t.Errorf("Expected afterUpdateHookCalls to be called %d times, got %d", 2*expectedAfterCalls, afterUpdateHookCalls)
+		}
+		if afterDeleteHookCalls != expectedAfterCalls {
+			t.Errorf("Expected afterDeleteHookCalls to be called %d times, got %d", expectedAfterCalls, afterDeleteHookCalls)
+		}
+	}
+
+	t.Run("rollback", func(t *testing.T) {
+		assertScenario(t, true)
+	})
+
+	t.Run("success", func(t *testing.T) {
+		assertScenario(t, false)
+	})
+}
+
 func TestTransactionFromInnerCreateHook(t *testing.T) {
 	t.Parallel()
 
@@ -410,4 +578,170 @@ func TestTransactionFromInnerDeleteHook(t *testing.T) {
 			t.Fatalf("Expected %q %d calls, got %d", k, total, found)
 		}
 	}
+}
+
+func TestTransactionFromInnerHooksPostgres(t *testing.T) {
+	createCollection := func(t *testing.T, app *tests.TestApp, name string) *core.Collection {
+		t.Helper()
+
+		collection := core.NewBaseCollection(name)
+		collection.Fields.Add(&core.TextField{Name: "title"})
+		if err := app.Save(collection); err != nil {
+			t.Fatalf("failed to create test collection: %v", err)
+		}
+
+		return collection
+	}
+
+	t.Run("create", func(t *testing.T) {
+		app := newPostgresTxTestApp(t)
+		defer app.Cleanup()
+
+		const collectionName = "tx_inner_pg_create"
+		collection := createCollection(t, app, collectionName)
+
+		app.OnRecordCreateExecute(collectionName).BindFunc(func(e *core.RecordEvent) error {
+			originalApp := e.App
+			return e.App.RunInTransaction(func(txApp core.App) error {
+				e.App = txApp
+				defer func() {
+					e.App = originalApp
+				}()
+
+				return e.Next()
+			})
+		})
+
+		app.OnRecordAfterCreateSuccess(collectionName).BindFunc(func(e *core.RecordEvent) error {
+			if e.App.IsTransactional() {
+				t.Fatal("Expected e.App to be non-transactional")
+			}
+
+			if _, err := e.App.DB().NewQuery("SELECT 1").Execute(); err != nil {
+				t.Fatalf("Failed to perform a db query after tx success: %v", err)
+			}
+
+			return e.Next()
+		})
+
+		record := core.NewRecord(collection)
+		record.Set("title", "test_inner_tx_pg_create")
+		if err := app.Save(record); err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
+
+		expectedHookCalls := map[string]int{
+			"OnRecordCreateExecute":      1,
+			"OnRecordAfterCreateSuccess": 1,
+		}
+		for k, total := range expectedHookCalls {
+			if found, ok := app.EventCalls[k]; !ok || total != found {
+				t.Fatalf("Expected %q %d calls, got %d", k, total, found)
+			}
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		app := newPostgresTxTestApp(t)
+		defer app.Cleanup()
+
+		const collectionName = "tx_inner_pg_update"
+		collection := createCollection(t, app, collectionName)
+
+		seed := core.NewRecord(collection)
+		seed.Set("title", "seed")
+		if err := app.Save(seed); err != nil {
+			t.Fatalf("failed to create seed record: %v", err)
+		}
+
+		app.OnRecordUpdateExecute(collectionName).BindFunc(func(e *core.RecordEvent) error {
+			originalApp := e.App
+			return e.App.RunInTransaction(func(txApp core.App) error {
+				e.App = txApp
+				defer func() {
+					e.App = originalApp
+				}()
+
+				return e.Next()
+			})
+		})
+
+		app.OnRecordAfterUpdateSuccess(collectionName).BindFunc(func(e *core.RecordEvent) error {
+			if e.App.IsTransactional() {
+				t.Fatal("Expected e.App to be non-transactional")
+			}
+
+			if _, err := e.App.DB().NewQuery("SELECT 1").Execute(); err != nil {
+				t.Fatalf("Failed to perform a db query after tx success: %v", err)
+			}
+
+			return e.Next()
+		})
+
+		if err := app.Save(seed); err != nil {
+			t.Fatalf("Update failed: %v", err)
+		}
+
+		expectedHookCalls := map[string]int{
+			"OnRecordUpdateExecute":      1,
+			"OnRecordAfterUpdateSuccess": 1,
+		}
+		for k, total := range expectedHookCalls {
+			if found, ok := app.EventCalls[k]; !ok || total != found {
+				t.Fatalf("Expected %q %d calls, got %d", k, total, found)
+			}
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		app := newPostgresTxTestApp(t)
+		defer app.Cleanup()
+
+		const collectionName = "tx_inner_pg_delete"
+		collection := createCollection(t, app, collectionName)
+
+		seed := core.NewRecord(collection)
+		seed.Set("title", "seed")
+		if err := app.Save(seed); err != nil {
+			t.Fatalf("failed to create seed record: %v", err)
+		}
+
+		app.OnRecordDeleteExecute(collectionName).BindFunc(func(e *core.RecordEvent) error {
+			originalApp := e.App
+			return e.App.RunInTransaction(func(txApp core.App) error {
+				e.App = txApp
+				defer func() {
+					e.App = originalApp
+				}()
+
+				return e.Next()
+			})
+		})
+
+		app.OnRecordAfterDeleteSuccess(collectionName).BindFunc(func(e *core.RecordEvent) error {
+			if e.App.IsTransactional() {
+				t.Fatal("Expected e.App to be non-transactional")
+			}
+
+			if _, err := e.App.DB().NewQuery("SELECT 1").Execute(); err != nil {
+				t.Fatalf("Failed to perform a db query after tx success: %v", err)
+			}
+
+			return e.Next()
+		})
+
+		if err := app.Delete(seed); err != nil {
+			t.Fatalf("Delete failed: %v", err)
+		}
+
+		expectedHookCalls := map[string]int{
+			"OnRecordDeleteExecute":      1,
+			"OnRecordAfterDeleteSuccess": 1,
+		}
+		for k, total := range expectedHookCalls {
+			if found, ok := app.EventCalls[k]; !ok || total != found {
+				t.Fatalf("Expected %q %d calls, got %d", k, total, found)
+			}
+		}
+	})
 }

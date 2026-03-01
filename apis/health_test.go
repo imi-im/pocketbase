@@ -21,6 +21,7 @@ func TestHealthAPI(t *testing.T) {
 				`"data":{}`,
 			},
 			NotExpectedContent: []string{
+				"dbType",
 				"canBackup",
 				"realIP",
 				"possibleProxyHeader",
@@ -40,6 +41,7 @@ func TestHealthAPI(t *testing.T) {
 				`"data":{}`,
 			},
 			NotExpectedContent: []string{
+				"dbType",
 				"canBackup",
 				"realIP",
 				"possibleProxyHeader",
@@ -57,6 +59,7 @@ func TestHealthAPI(t *testing.T) {
 			ExpectedContent: []string{
 				`"code":200`,
 				`"data":{`,
+				`"dbType":"sqlite"`,
 				`"canBackup":true`,
 				`"realIP"`,
 				`"possibleProxyHeader"`,

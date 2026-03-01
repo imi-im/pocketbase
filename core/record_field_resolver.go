@@ -76,6 +76,11 @@ func (r *RecordFieldResolver) SetAllowHiddenFields(allowHiddenFields bool) {
 	r.allowHiddenFields = allowHiddenFields
 }
 
+// SearchDialect implements `search.DialectFieldResolver`.
+func (r *RecordFieldResolver) SearchDialect() string {
+	return r.app.DBDialect().String()
+}
+
 // NewRecordFieldResolver creates and initializes a new `RecordFieldResolver`.
 func NewRecordFieldResolver(
 	app App,

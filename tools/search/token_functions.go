@@ -11,6 +11,7 @@ import (
 )
 
 var TokenFunctions = map[string]func(
+	dialect string,
 	argTokenResolverFunc func(fexpr.Token) (*ResolverResult, error),
 	args ...fexpr.Token,
 ) (*ResolverResult, error){
@@ -25,7 +26,7 @@ var TokenFunctions = map[string]func(
 	// Or in other words, if a collection has "orgs" multiple relation field pointing to "orgs" collection that has "office" as "geoPoint" field,
 	// then the filter: `geoDistance(orgs.office.lon, orgs.office.lat, 1, 2) < 200`
 	// will evaluate to true if for at-least-one of the "orgs.office" records the function result in a value satisfying the condition (aka. "result < 200").
-	"geoDistance": func(argTokenResolverFunc func(fexpr.Token) (*ResolverResult, error), args ...fexpr.Token) (*ResolverResult, error) {
+	"geoDistance": func(dialect string, argTokenResolverFunc func(fexpr.Token) (*ResolverResult, error), args ...fexpr.Token) (*ResolverResult, error) {
 		if len(args) != 4 {
 			return nil, fmt.Errorf("[geoDistance] expected 4 arguments, got %d", len(args))
 		}
@@ -78,7 +79,7 @@ var TokenFunctions = map[string]func(
 	//
 	// A multi-match constraint will be also applied in case the time-value
 	// is an identifier as a result of a multi-value relation field.
-	"strftime": func(argTokenResolverFunc func(fexpr.Token) (*ResolverResult, error), args ...fexpr.Token) (*ResolverResult, error) {
+	"strftime": func(dialect string, argTokenResolverFunc func(fexpr.Token) (*ResolverResult, error), args ...fexpr.Token) (*ResolverResult, error) {
 		totalArgs := len(args)
 
 		if totalArgs < 1 {
@@ -104,7 +105,7 @@ var TokenFunctions = map[string]func(
 		// no further arguments
 		if totalArgs == 1 {
 			formatArgResult.NullFallback = NullFallbackEnforced
-			formatArgResult.Identifier = "strftime(" + formatArgResult.Identifier + ")"
+			formatArgResult.Identifier = buildStrftimeIdentifier(dialect, []string{formatArgResult.Identifier})
 			return formatArgResult, nil
 		}
 
@@ -163,13 +164,13 @@ var TokenFunctions = map[string]func(
 			}
 		}
 
-		result.Identifier = "strftime(" + strings.Join(identifiers, ",") + ")"
+		result.Identifier = buildStrftimeIdentifier(dialect, identifiers)
 
 		if timeValueArgResult.MultiMatchSubQuery != nil {
 			// replace the regular time-value identifier with the multi-match one
 			identifiers[1] = timeValueArgResult.MultiMatchSubQuery.ValueIdentifier
 			result.MultiMatchSubQuery = timeValueArgResult.MultiMatchSubQuery
-			result.MultiMatchSubQuery.ValueIdentifier = "strftime(" + strings.Join(identifiers, ",") + ")"
+			result.MultiMatchSubQuery.ValueIdentifier = buildStrftimeIdentifier(dialect, identifiers)
 
 			err = concatUniqueParams(result.MultiMatchSubQuery.Params, result.Params)
 			if err != nil {
@@ -179,6 +180,61 @@ var TokenFunctions = map[string]func(
 
 		return result, nil
 	},
+}
+
+func buildStrftimeIdentifier(dialect string, identifiers []string) string {
+	if strings.EqualFold(dialect, "postgres") {
+		return buildPostgresStrftimeIdentifier(identifiers)
+	}
+
+	return "strftime(" + strings.Join(identifiers, ",") + ")"
+}
+
+func buildPostgresStrftimeIdentifier(identifiers []string) string {
+	if len(identifiers) == 0 {
+		return "to_char((now() at time zone 'utc'), '')"
+	}
+
+	formatExpr := postgresStrftimeFormatExpr(identifiers[0])
+	timeExpr := "(now() at time zone 'utc')"
+	if len(identifiers) > 1 {
+		timeExpr = "(" + identifiers[1] + ")::timestamp"
+	}
+
+	for _, modifierExpr := range identifiers[2:] {
+		timeExpr = "(" +
+			"CASE " +
+			"WHEN lower(" + modifierExpr + ") = 'utc' THEN (" + timeExpr + " AT TIME ZONE 'utc') " +
+			"WHEN lower(" + modifierExpr + ") = 'localtime' THEN (" + timeExpr + " AT TIME ZONE current_setting('TIMEZONE')) " +
+			"WHEN lower(" + modifierExpr + ") = 'start of day' THEN date_trunc('day', " + timeExpr + ") " +
+			"WHEN lower(" + modifierExpr + ") = 'start of month' THEN date_trunc('month', " + timeExpr + ") " +
+			"WHEN lower(" + modifierExpr + ") = 'start of year' THEN date_trunc('year', " + timeExpr + ") " +
+			"WHEN lower(" + modifierExpr + ") ~ '^[+-]?[0-9]+(\\.[0-9]+)?\\s+(years?|months?|days?|hours?|minutes?|seconds?)$' THEN (" + timeExpr + " + (" + modifierExpr + ")::interval) " +
+			"ELSE " + timeExpr + " " +
+			"END" +
+			")"
+	}
+
+	return "to_char(" + timeExpr + ", " + formatExpr + ")"
+}
+
+func postgresStrftimeFormatExpr(sqliteFormatExpr string) string {
+	replacements := [][2]string{
+		{"%Y", "YYYY"},
+		{"%m", "MM"},
+		{"%d", "DD"},
+		{"%H", "HH24"},
+		{"%M", "MI"},
+		{"%S", "SS"},
+		{"%j", "DDD"},
+	}
+
+	result := sqliteFormatExpr
+	for _, pair := range replacements {
+		result = "replace(" + result + ", '" + pair[0] + "', '" + pair[1] + "')"
+	}
+
+	return result
 }
 
 func concatUniqueParams(destParams, newParams dbx.Params) error {

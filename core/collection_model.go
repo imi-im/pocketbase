@@ -781,7 +781,7 @@ func (c *Collection) updateGeneratedIdIfExists(app App) {
 		original := parsed.IndexName
 		parsed.IndexName = strings.ReplaceAll(parsed.IndexName, c.Id, newId)
 		if parsed.IndexName != original {
-			c.Indexes[i] = parsed.Build()
+			c.Indexes[i] = parsed.BuildByDialect(app.DBDialect().String())
 		}
 	}
 

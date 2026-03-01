@@ -494,8 +494,13 @@ func migrateOldCollections(txApp core.App, oldSettings *oldSettingsModel) error 
 
 			// add system field indexes
 			// ---
+			usernameIndex := fmt.Sprintf("CREATE UNIQUE INDEX `_%s_username_idx` ON `%s` (username COLLATE NOCASE)", c.Id, c.Name)
+			if txApp.DBDialect() == core.DBDialectPostgres {
+				usernameIndex = fmt.Sprintf("CREATE UNIQUE INDEX `_%s_username_idx` ON `%s` (`username`)", c.Id, c.Name)
+			}
+
 			c.Indexes = append(types.JSONArray[string]{
-				fmt.Sprintf("CREATE UNIQUE INDEX `_%s_username_idx` ON `%s` (username COLLATE NOCASE)", c.Id, c.Name),
+				usernameIndex,
 				fmt.Sprintf("CREATE UNIQUE INDEX `_%s_email_idx` ON `%s` (`email`) WHERE `email` != ''", c.Id, c.Name),
 				fmt.Sprintf("CREATE UNIQUE INDEX `_%s_tokenKey_idx` ON `%s` (`tokenKey`)", c.Id, c.Name),
 			}, c.Indexes...)

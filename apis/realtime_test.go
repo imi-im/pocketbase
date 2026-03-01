@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,27 @@ import (
 	"github.com/pocketbase/pocketbase/tools/subscriptions"
 	"github.com/pocketbase/pocketbase/tools/types"
 )
+
+func newPostgresRealtimeTestApp(t testing.TB) *tests.TestApp {
+	t.Helper()
+
+	dataConn := os.Getenv("PB_TEST_PG_DATA_DB_CONN")
+	auxConn := os.Getenv("PB_TEST_PG_AUX_DB_CONN")
+	if dataConn == "" || auxConn == "" {
+		t.Skip("PB_TEST_PG_DATA_DB_CONN and PB_TEST_PG_AUX_DB_CONN are required")
+	}
+
+	app, err := tests.NewTestAppWithDialect(tests.TestAppDBConfig{
+		Dialect:          core.DBDialectPostgres,
+		DataDBConnString: dataConn,
+		AuxDBConnString:  auxConn,
+	})
+	if err != nil {
+		t.Fatalf("failed to init postgres test app: %v", err)
+	}
+
+	return app
+}
 
 func TestRealtimeConnect(t *testing.T) {
 	scenarios := []tests.ApiScenario{
@@ -546,6 +568,56 @@ func findCustomUserByEmail(app core.App, email string) (*CustomUser, error) {
 	return model, nil
 }
 
+type CustomSuperuser struct {
+	core.BaseModel
+
+	Email string `db:"email" json:"email"`
+}
+
+func (m *CustomSuperuser) TableName() string {
+	return core.CollectionNameSuperusers
+}
+
+func findCustomSuperuserByEmail(app core.App, email string) (*CustomSuperuser, error) {
+	model := &CustomSuperuser{}
+
+	err := app.ModelQuery(model).
+		AndWhere(dbx.HashExp{"email": email}).
+		Limit(1).
+		One(model)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return model, nil
+}
+
+func seedRealtimePostgresSuperusers(t testing.TB, app *tests.TestApp) (*core.Record, *core.Record) {
+	t.Helper()
+
+	collection, err := app.FindCollectionByNameOrId(core.CollectionNameSuperusers)
+	if err != nil {
+		t.Fatalf("failed to find superusers collection: %v", err)
+	}
+
+	create := func(email string) *core.Record {
+		record := core.NewRecord(collection)
+		record.SetEmail(email)
+		record.SetPassword("1234567890")
+		if err := app.Save(record); err != nil {
+			t.Fatalf("failed to create superuser %q: %v", email, err)
+		}
+		return record
+	}
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	u1 := create("pg_realtime_1_" + suffix + "@example.com")
+	u2 := create("pg_realtime_2_" + suffix + "@example.com")
+
+	return u1, u2
+}
+
 func TestRealtimeCustomAuthModelDeleteEvent(t *testing.T) {
 	testApp, _ := tests.NewTestApp()
 	defer testApp.Cleanup()
@@ -637,6 +709,157 @@ func TestRealtimeCustomAuthModelUpdateEvent(t *testing.T) {
 	}
 }
 
+func TestRealtimeAuthRecordDeleteEventPostgres(t *testing.T) {
+	testApp := newPostgresRealtimeTestApp(t)
+	defer testApp.Cleanup()
+
+	apis.NewRouter(testApp)
+
+	authRecord1, authRecord2 := seedRealtimePostgresSuperusers(t, testApp)
+
+	client1 := subscriptions.NewDefaultClient()
+	client1.Set(apis.RealtimeClientAuthKey, authRecord1)
+	testApp.SubscriptionsBroker().Register(client1)
+
+	client2 := subscriptions.NewDefaultClient()
+	client2.Set(apis.RealtimeClientAuthKey, authRecord1)
+	testApp.SubscriptionsBroker().Register(client2)
+
+	client3 := subscriptions.NewDefaultClient()
+	client3.Set(apis.RealtimeClientAuthKey, authRecord2)
+	testApp.SubscriptionsBroker().Register(client3)
+
+	e := new(core.ModelEvent)
+	e.App = testApp
+	e.Type = core.ModelEventTypeDelete
+	e.Context = context.Background()
+	e.Model = authRecord1
+
+	testApp.OnModelAfterDeleteSuccess().Trigger(e)
+
+	if total := len(testApp.SubscriptionsBroker().Clients()); total != 3 {
+		t.Fatalf("Expected %d subscription clients, found %d", 3, total)
+	}
+
+	if auth := client1.Get(apis.RealtimeClientAuthKey); auth != nil {
+		t.Fatalf("[client1] Expected the auth state to be unset, found %#v", auth)
+	}
+
+	if auth := client2.Get(apis.RealtimeClientAuthKey); auth != nil {
+		t.Fatalf("[client2] Expected the auth state to be unset, found %#v", auth)
+	}
+
+	if auth := client3.Get(apis.RealtimeClientAuthKey); auth == nil || auth.(*core.Record).Id != authRecord2.Id {
+		t.Fatalf("[client3] Expected the auth state to be left unchanged, found %#v", auth)
+	}
+}
+
+func TestRealtimeAuthRecordUpdateEventPostgres(t *testing.T) {
+	testApp := newPostgresRealtimeTestApp(t)
+	defer testApp.Cleanup()
+
+	apis.NewRouter(testApp)
+
+	authRecord1, _ := seedRealtimePostgresSuperusers(t, testApp)
+
+	client := subscriptions.NewDefaultClient()
+	client.Set(apis.RealtimeClientAuthKey, authRecord1)
+	testApp.SubscriptionsBroker().Register(client)
+
+	authRecord2, err := testApp.FindAuthRecordByEmail(core.CollectionNameSuperusers, authRecord1.Email())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authRecord2.SetEmail("new@example.com")
+
+	e := new(core.ModelEvent)
+	e.App = testApp
+	e.Type = core.ModelEventTypeUpdate
+	e.Context = context.Background()
+	e.Model = authRecord2
+
+	testApp.OnModelAfterUpdateSuccess().Trigger(e)
+
+	clientAuthRecord, _ := client.Get(apis.RealtimeClientAuthKey).(*core.Record)
+	if clientAuthRecord.Email() != authRecord2.Email() {
+		t.Fatalf("Expected authRecord with email %q, got %q", authRecord2.Email(), clientAuthRecord.Email())
+	}
+}
+
+func TestRealtimeCustomAuthModelDeleteEventPostgres(t *testing.T) {
+	testApp := newPostgresRealtimeTestApp(t)
+	defer testApp.Cleanup()
+
+	apis.NewRouter(testApp)
+
+	authRecord1, authRecord2 := seedRealtimePostgresSuperusers(t, testApp)
+
+	client1 := subscriptions.NewDefaultClient()
+	client1.Set(apis.RealtimeClientAuthKey, authRecord1)
+	testApp.SubscriptionsBroker().Register(client1)
+
+	client2 := subscriptions.NewDefaultClient()
+	client2.Set(apis.RealtimeClientAuthKey, authRecord1)
+	testApp.SubscriptionsBroker().Register(client2)
+
+	client3 := subscriptions.NewDefaultClient()
+	client3.Set(apis.RealtimeClientAuthKey, authRecord2)
+	testApp.SubscriptionsBroker().Register(client3)
+
+	customUser, err := findCustomSuperuserByEmail(testApp, authRecord1.Email())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := testApp.Delete(customUser); err != nil {
+		t.Fatal(err)
+	}
+
+	if total := len(testApp.SubscriptionsBroker().Clients()); total != 3 {
+		t.Fatalf("Expected %d subscription clients, found %d", 3, total)
+	}
+
+	if auth := client1.Get(apis.RealtimeClientAuthKey); auth != nil {
+		t.Fatalf("[client1] Expected the auth state to be unset, found %#v", auth)
+	}
+
+	if auth := client2.Get(apis.RealtimeClientAuthKey); auth != nil {
+		t.Fatalf("[client2] Expected the auth state to be unset, found %#v", auth)
+	}
+
+	if auth := client3.Get(apis.RealtimeClientAuthKey); auth == nil || auth.(*core.Record).Id != authRecord2.Id {
+		t.Fatalf("[client3] Expected the auth state to be left unchanged, found %#v", auth)
+	}
+}
+
+func TestRealtimeCustomAuthModelUpdateEventPostgres(t *testing.T) {
+	testApp := newPostgresRealtimeTestApp(t)
+	defer testApp.Cleanup()
+
+	apis.NewRouter(testApp)
+
+	authRecord, _ := seedRealtimePostgresSuperusers(t, testApp)
+
+	client := subscriptions.NewDefaultClient()
+	client.Set(apis.RealtimeClientAuthKey, authRecord)
+	testApp.SubscriptionsBroker().Register(client)
+
+	customUser, err := findCustomSuperuserByEmail(testApp, authRecord.Email())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	customUser.Email = "new@example.com"
+	if err := testApp.Save(customUser); err != nil {
+		t.Fatal(err)
+	}
+
+	clientAuthRecord, _ := client.Get(apis.RealtimeClientAuthKey).(*core.Record)
+	if clientAuthRecord.Email() != customUser.Email {
+		t.Fatalf("Expected authRecord with email %q, got %q", customUser.Email, clientAuthRecord.Email())
+	}
+}
+
 // -------------------------------------------------------------------
 
 var _ core.Model = (*CustomModelResolve)(nil)
@@ -655,6 +878,36 @@ func (m *CustomModelResolve) TableName() string {
 func TestRealtimeRecordResolve(t *testing.T) {
 	t.Parallel()
 
+	runRealtimeRecordResolveScenarios(t, func(t testing.TB) *tests.TestApp {
+		app, _ := tests.NewTestApp()
+		return app
+	})
+}
+
+func TestRealtimeRecordResolvePostgres(t *testing.T) {
+	t.Parallel()
+
+	runRealtimeRecordResolveScenarios(t, func(t testing.TB) *tests.TestApp {
+		dataConn := os.Getenv("PB_TEST_PG_DATA_DB_CONN")
+		auxConn := os.Getenv("PB_TEST_PG_AUX_DB_CONN")
+		if dataConn == "" || auxConn == "" {
+			t.Skip("PB_TEST_PG_DATA_DB_CONN and PB_TEST_PG_AUX_DB_CONN are required")
+		}
+
+		app, err := tests.NewTestAppWithDialect(tests.TestAppDBConfig{
+			Dialect:          core.DBDialectPostgres,
+			DataDBConnString: dataConn,
+			AuxDBConnString:  auxConn,
+		})
+		if err != nil {
+			t.Fatalf("failed to init postgres test app: %v", err)
+		}
+
+		return app
+	})
+}
+
+func runRealtimeRecordResolveScenarios(t *testing.T, appFactory func(t testing.TB) *tests.TestApp) {
 	const testCollectionName = "realtime_test_collection"
 
 	testRecordId := core.GenerateDefaultRandomId()
@@ -790,11 +1043,17 @@ func TestRealtimeRecordResolve(t *testing.T) {
 
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
-			testApp, _ := tests.NewTestApp()
+			testApp := appFactory(t)
 			defer testApp.Cleanup()
 
 			// init realtime handlers
 			apis.NewRouter(testApp)
+
+			if existingCollection, err := testApp.FindCollectionByNameOrId(testCollectionName); err == nil && existingCollection != nil {
+				if err := testApp.Delete(existingCollection); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			// create new test collection with public read access
 			testCollection := core.NewBaseCollection(testCollectionName)

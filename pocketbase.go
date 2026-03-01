@@ -55,6 +55,9 @@ type Config struct {
 	DefaultQueryTimeout  time.Duration // default to core.DefaultQueryTimeout (in seconds)
 
 	// optional DB configurations
+	DBDialect        core.DBDialect
+	DataDBConnString string
+	AuxDBConnString  string
 	DataMaxOpenConns int                // default to core.DefaultDataMaxOpenConns
 	DataMaxIdleConns int                // default to core.DefaultDataMaxIdleConns
 	AuxMaxOpenConns  int                // default to core.DefaultAuxMaxOpenConns
@@ -96,6 +99,8 @@ func NewWithConfig(config Config) *PocketBase {
 		config.DefaultQueryTimeout = core.DefaultQueryTimeout
 	}
 
+	normalizeDBConfig(&config)
+
 	executableName := filepath.Base(os.Args[0])
 
 	pb := &PocketBase{
@@ -130,6 +135,9 @@ func NewWithConfig(config Config) *PocketBase {
 		DataDir:          pb.dataDirFlag,
 		EncryptionEnv:    pb.encryptionEnvFlag,
 		QueryTimeout:     time.Duration(pb.queryTimeout) * time.Second,
+		DBDialect:        config.DBDialect,
+		DataDBConnString: config.DataDBConnString,
+		AuxDBConnString:  config.AuxDBConnString,
 		DataMaxOpenConns: config.DataMaxOpenConns,
 		DataMaxIdleConns: config.DataMaxIdleConns,
 		AuxMaxOpenConns:  config.AuxMaxOpenConns,
@@ -159,6 +167,29 @@ func NewWithConfig(config Config) *PocketBase {
 	})
 
 	return pb
+}
+
+func normalizeDBConfig(config *Config) {
+	if config == nil {
+		return
+	}
+
+	config.DataDBConnString = strings.TrimSpace(config.DataDBConnString)
+	config.AuxDBConnString = strings.TrimSpace(config.AuxDBConnString)
+
+	if config.AuxDBConnString == "" {
+		config.AuxDBConnString = config.DataDBConnString
+	}
+
+	if isPostgresConnString(config.DataDBConnString) {
+		config.DBDialect = core.DBDialectPostgres
+	}
+}
+
+func isPostgresConnString(connString string) bool {
+	connString = strings.ToLower(strings.TrimSpace(connString))
+
+	return strings.HasPrefix(connString, "postgres://") || strings.HasPrefix(connString, "postgresql://")
 }
 
 // Start starts the application, aka. registers the default system

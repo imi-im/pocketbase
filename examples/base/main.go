@@ -17,7 +17,15 @@ import (
 )
 
 func main() {
-	app := pocketbase.New()
+	dbDialect := os.Getenv("PB_DB_DIALECT")
+	dataDBConnString := os.Getenv("PB_DATA_DB_CONN")
+	auxDBConnString := os.Getenv("PB_AUX_DB_CONN")
+
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DBDialect:        core.DBDialect(dbDialect),
+		DataDBConnString: dataDBConnString,
+		AuxDBConnString:  auxDBConnString,
+	})
 
 	// ---------------------------------------------------------------
 	// Optional plugin flags:

@@ -23,10 +23,11 @@ func healthCheck(e *core.RequestEvent) error {
 	}{
 		Code:    http.StatusOK,
 		Message: "API is healthy.",
+		Data:    map[string]any{},
 	}
 
 	if e.HasSuperuserAuth() {
-		resp.Data = make(map[string]any, 3)
+		resp.Data["dbType"] = e.App.DBDialect().String()
 		resp.Data["canBackup"] = !e.App.Store().Has(core.StoreKeyActiveBackup)
 		resp.Data["realIP"] = e.RealIP()
 
@@ -45,8 +46,6 @@ func healthCheck(e *core.RequestEvent) error {
 			}
 		}
 		resp.Data["possibleProxyHeader"] = possibleProxyHeader
-	} else {
-		resp.Data = map[string]any{} // ensure that it is returned as object
 	}
 
 	return e.JSON(http.StatusOK, resp)

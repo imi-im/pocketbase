@@ -339,3 +339,32 @@ func TestLikeParamsWrapping(t *testing.T) {
 		t.Fatalf("Expected query \n%s, \ngot \n%s", expectedQuery, calledQueries[0])
 	}
 }
+
+func TestFilterDataBuildExprPostgresDialectStrftime(t *testing.T) {
+	resolver := search.NewSimpleFieldResolver("created")
+	resolver.SetSearchDialect("postgres")
+
+	filter := search.FilterData("strftime('%Y-%m', created, '+1 years') = '2027-01'")
+
+	expr, err := filter.BuildExpr(resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dummyDB := &dbx.DB{}
+	rawSQL := expr.Build(dummyDB, dbx.Params{})
+
+	checks := []string{
+		"to_char(",
+		"::timestamp",
+		"::interval",
+		"'YYYY'",
+		"'MM'",
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(rawSQL, check) {
+			t.Fatalf("Expected postgres expression to contain %q, got\n%s", check, rawSQL)
+		}
+	}
+}
