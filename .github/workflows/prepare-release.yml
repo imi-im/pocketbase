@@ -1,0 +1,122 @@
+name: prepare-release
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  prepare-release:
+    if: ${{ github.event.release.prerelease == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    concurrency:
+      group: prepare-release-${{ github.event.release.tag_name }}
+      cancel-in-progress: false
+    env:
+      DEFAULT_BRANCH: master
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_VERSION: ${{ github.event.release.tag_name }}-imi
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEFAULT_BRANCH }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream release tag
+        run: |
+          git remote add github https://github.com/pocketbase/pocketbase.git
+          git fetch --no-tags github "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+
+      - name: Merge upstream release tag
+        run: git merge --no-ff --no-edit "${RELEASE_TAG}"
+
+      - name: Merge repo branch plugin/wecom
+        run: |
+          git fetch --no-tags origin "refs/heads/plugin/wecom:refs/remotes/origin/plugin/wecom"
+          git merge --no-ff --no-edit "origin/plugin/wecom"
+
+      - name: Update release UI env
+        run: |
+          sed -E -i 's/^PB_VERSION[[:space:]]*=.*$/PB_VERSION             = "'"${RELEASE_VERSION}"'"/' ui/.env
+          cat <<EOF > ui/.env.production.local
+          # Managed by .github/workflows/prepare-release.yml
+          PB_BACKEND_URL = "/"
+          PB_VERSION = "${RELEASE_VERSION}"
+          EOF
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.17.0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '>=1.26.1'
+
+      - name: Build Admin dashboard UI
+        run: npm --prefix=./ui ci && npm --prefix=./ui run build
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Commit release preparation changes
+        id: commit_changes
+        run: |
+          git add ui/.env ui/.env.production.local ui/dist
+
+          if git diff --cached --quiet; then
+            echo "created_commit=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit -m "release: prepare ${RELEASE_VERSION}"
+          echo "created_commit=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push master
+        run: git push origin "HEAD:${DEFAULT_BRANCH}"
+
+      - name: Move release tag to prepared commit
+        run: |
+          git tag -f "${RELEASE_TAG}"
+          git push --force origin "refs/tags/${RELEASE_TAG}"
+
+      - name: Promote prerelease to release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const release = context.payload.release;
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              tag_name: release.tag_name,
+              target_commitish: process.env.DEFAULT_BRANCH,
+              name: release.name || release.tag_name,
+              body: release.body || '',
+              draft: false,
+              prerelease: false,
+            });
+
+      - name: Trigger publish workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-release.yml',
+              ref: process.env.DEFAULT_BRANCH,
+              inputs: {
+                release_tag: process.env.RELEASE_TAG,
+              },
+            });
