@@ -18,7 +18,6 @@ jobs:
     env:
       DEFAULT_BRANCH: master
       RELEASE_TAG: ${{ github.event.release.tag_name }}
-      RELEASE_VERSION: ${{ github.event.release.tag_name }}-imi
     steps:
       - name: Checkout master
         uses: actions/checkout@v4
@@ -31,13 +30,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Derive upstream and release versions
+        run: |
+          case "${RELEASE_TAG}" in
+            *-imi)
+              echo "RELEASE_VERSION=${RELEASE_TAG}" >> "$GITHUB_ENV"
+              echo "UPSTREAM_TAG=${RELEASE_TAG%-imi}" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Release tag must end with -imi, got: ${RELEASE_TAG}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Fetch upstream release tag
         run: |
           git remote add github https://github.com/pocketbase/pocketbase.git
-          git fetch --no-tags github "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          git fetch --no-tags github "refs/tags/${UPSTREAM_TAG}"
 
       - name: Merge upstream release tag
-        run: git merge --no-ff --no-edit "${RELEASE_TAG}"
+        run: git merge --no-ff --no-edit FETCH_HEAD
 
       - name: Merge repo branch plugin/wecom
         run: |
