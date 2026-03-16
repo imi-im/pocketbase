@@ -20,11 +20,13 @@ jobs:
     concurrency:
       group: publish-release-${{ inputs.release_tag || github.event.release.tag_name }}
       cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.release_tag || github.event.release.tag_name }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -38,7 +40,15 @@ jobs:
           go-version: '>=1.26.1'
 
       - name: Build Admin dashboard UI
-        run: npm --prefix=./ui ci && npm --prefix=./ui run build
+        run: |
+          cat <<EOF > ui/.env.production.local
+          # Managed by .github/workflows/publish-release.yml
+          PB_BACKEND_URL = "/"
+          PB_VERSION = "${RELEASE_TAG}"
+          EOF
+          npm --prefix=./ui ci
+          npm --prefix=./ui run build
+          rm -f ui/.env.production.local
 
       - name: Run tests
         run: go test ./...

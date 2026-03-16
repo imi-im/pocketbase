@@ -59,11 +59,6 @@ jobs:
       - name: Update release UI env
         run: |
           sed -E -i 's/^PB_VERSION[[:space:]]*=.*$/PB_VERSION             = "'"${RELEASE_VERSION}"'"/' ui/.env
-          cat <<EOF > ui/.env.production.local
-          # Managed by .github/workflows/prepare-release.yml
-          PB_BACKEND_URL = "/"
-          PB_VERSION = "${RELEASE_VERSION}"
-          EOF
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -76,7 +71,15 @@ jobs:
           go-version: '>=1.26.1'
 
       - name: Build Admin dashboard UI
-        run: npm --prefix=./ui ci && npm --prefix=./ui run build
+        run: |
+          cat <<EOF > ui/.env.production.local
+          # Managed by .github/workflows/prepare-release.yml
+          PB_BACKEND_URL = "/"
+          PB_VERSION = "${RELEASE_VERSION}"
+          EOF
+          npm --prefix=./ui ci
+          npm --prefix=./ui run build
+          rm -f ui/.env.production.local
 
       - name: Run tests
         run: go test ./...
@@ -84,7 +87,7 @@ jobs:
       - name: Commit release preparation changes
         id: commit_changes
         run: |
-          git add ui/.env ui/.env.production.local ui/dist
+          git add ui/.env ui/dist
 
           if git diff --cached --quiet; then
             echo "created_commit=false" >> "$GITHUB_OUTPUT"
