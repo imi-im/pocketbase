@@ -43,7 +43,10 @@ builds:
         goarch: ppc64le
 
 release:
-  draft: true
+  draft: false
+  prerelease: false
+  replace_existing_artifacts: true
+  mode: keep-existing
 
 archives:
   - id: archive_noncgo
