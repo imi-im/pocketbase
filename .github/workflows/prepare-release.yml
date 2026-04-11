@@ -19,6 +19,17 @@ jobs:
       DEFAULT_BRANCH: master
       RELEASE_TAG: ${{ github.event.release.tag_name }}
     steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEFAULT_BRANCH }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Derive upstream and release versions
         run: |
           case "${RELEASE_TAG}" in
@@ -32,23 +43,18 @@ jobs:
               ;;
           esac
 
-      - name: Checkout upstream pocketbase
-        uses: actions/checkout@v4
-        with:
-          repository: pocketbase/pocketbase
-          ref: ${{ env.UPSTREAM_TAG }}
-          fetch-depth: 0
-
-      - name: Configure git
+      - name: Fetch upstream release tag
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add self https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git remote add github https://github.com/pocketbase/pocketbase.git
+          git fetch --no-tags github "refs/tags/${UPSTREAM_TAG}"
+
+      - name: Merge upstream release tag
+        run: git merge --no-ff --no-edit FETCH_HEAD
 
       - name: Merge repo branch plugin/wecom
         run: |
-          git fetch --no-tags self "refs/heads/plugin/wecom:refs/remotes/self/plugin/wecom"
-          git merge --no-ff --no-edit "self/plugin/wecom"
+          git fetch --no-tags origin "refs/heads/plugin/wecom:refs/remotes/origin/plugin/wecom"
+          git merge --no-ff --no-edit "origin/plugin/wecom"
 
       - name: Update release UI env
         run: |
@@ -92,12 +98,12 @@ jobs:
           echo "created_commit=true" >> "$GITHUB_OUTPUT"
 
       - name: Push master
-        run: git push self "HEAD:${DEFAULT_BRANCH}"
+        run: git push origin "HEAD:${DEFAULT_BRANCH}"
 
       - name: Move release tag to prepared commit
         run: |
           git tag -f "${RELEASE_TAG}"
-          git push --force self "refs/tags/${RELEASE_TAG}"
+          git push --force origin "refs/tags/${RELEASE_TAG}"
 
       - name: Promote prerelease to release
         uses: actions/github-script@v7
