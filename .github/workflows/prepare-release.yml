@@ -33,7 +33,7 @@ jobs:
           esac
 
       - name: Checkout upstream pocketbase
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: pocketbase/pocketbase
           ref: ${{ env.UPSTREAM_TAG }}
@@ -54,10 +54,12 @@ jobs:
         run: |
           sed -E -i 's/^PB_VERSION[[:space:]]*=.*$/PB_VERSION             = "'"${RELEASE_VERSION}"'"/' ui/.env
 
+
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20.17.0
+          node-version: '>=25.2.1'
+        
 
       - name: Set up Go
         uses: actions/setup-go@v6
