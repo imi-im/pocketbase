@@ -60,7 +60,7 @@ jobs:
 
       - name: Merge repo branch plugin/wecom
         run: |
-          git fetch --no-tags origin plugin/wecom
+          git fetch --no-tags origin refs/heads/plugin/wecom:refs/remotes/origin/plugin/wecom
           git merge --no-ff --no-edit "origin/plugin/wecom"
 
       - name: Update release UI env
